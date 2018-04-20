@@ -1,0 +1,685 @@
+---
+title: "16S WNV Antibiotics Analysis - Infection"
+author: "Scott A. Handley and Barry Hykes Jr."
+date: '`r format(Sys.Date(), "%B %d, %Y")`'
+output: html_document
+---
+
+**Project Description:** Examining the enteric bacterial microbiome of West Nile Virus infected mice (pre and post infection) to determine alterations in bacterial community strucutre or specific taxa which covary with lethality.
+
+**Primary Collaborator:**
+Larissa Thakray (lthackray@wustl.edu)
+
+**Other relevant files:**
+The following Phyloseq objects are available. Each is distinguished based on the 16S reference database used for taxonomic classification. RDP and Silva were processed through the species assignment workflow:
+
+* ps0.wnv_antibiotics.gg.RDS (GreenGenes)
+* ps0.wnv_antibiotics.rdp.RDS (RDP)
+* ps0.wnv_antibiotics.silva.RDS (Silva)
+* ps0.wnv_antibiotics.hitDB.RDS (hitDB)
+
+**References:**
+* http://f1000research.com/articles/5-1492/v1
+
+* http://benjjneb.github.io/dada2/tutorial.htm
+
+**Workflow details:** The R commands below represent a full analysis of the following:
+
+1) Sample quality control
+2) ASV properties
+3) Community Composition
+4) Alpha diversity
+5) Beta diversity
+
+```{r global_options, include=FALSE}
+knitr::opts_chunk$set(fig.width=8,
+                      fig.height=6,
+                      fig.path="./figures/",
+                      dev='png',
+                      warning=FALSE,
+                      message=FALSE)
+```
+##Load libraries
+
+```{r initiate-environment}
+library("tidyverse")
+packageVersion("tidyverse")
+library("reshape2")
+packageVersion("reshape2")
+library("plyr")
+packageVersion("plyr")
+library("phyloseq")
+packageVersion("phyloseq")
+library("RColorBrewer")
+packageVersion("RColorBrewer")
+library("vegan")
+packageVersion("vegan")
+library("gridExtra")
+packageVersion("gridExtra")
+library("knitr")
+packageVersion("knitr")
+library("plotly")
+packageVersion("plotly")
+library("microbiome")
+packageVersion("microbiome")
+library("ggpubr")
+packageVersion("ggpubr")
+library("data.table")
+packageVersion("data.table")
+library("mgcv")
+packageVersion("mgcv")
+library("pairwiseAdonis") #https://github.com/pmartinezarbizu/pairwiseAdonis
+packageVersion("pairwiseAdonis")
+
+```
+
+```{r global-theme-settings, include=FALSE}
+# Set global theming
+theme_set(theme_bw(base_size = 12,
+                   base_family = "Arial"))
+
+```
+##Read in data
+
+```{r initiate-data}
+# Load Phyloseq Object
+# Selected RDP due to it's up-to-date nature and conservative taxonomy. Other files are also valid for anlysis but are not explored here
+ps0 <- readRDS("./Data/ps0.wnv_antibiotics.rdp.RDS")
+ps0
+
+# Load mapping file
+map <- import_qiime_sample_data("./Data/mapping_wnv_antibiotics.txt")
+dim(map)
+ps0 <- merge_phyloseq(ps0, map)
+ps0
+
+# Perform a few sanity checks
+sample_variables(ps0)
+ntaxa(ps0)
+rank_names(ps0)
+get_taxa_unique(ps0, "Phylum")
+
+```
+##Factor reordering and renaming
+
+```{r factor-adjustments}
+# Remove Day -14 cohoused data
+levels(sample_data(ps0)$DaysTreatment)
+ps0 <- subset_samples(ps0, DaysTreatment != "D.14")
+levels(sample_data(ps0)$DaysTreatment)
+
+# Remove taxa no longer part of the count table due to sample removal
+summary(taxa_sums(ps0))
+ps0 <- prune_taxa(taxa_sums(ps0) > 0, ps0)
+summary(taxa_sums(ps0))
+
+# Factor re-ordering, relabelling, etc.
+# Reorder Time points
+levels(sample_data(ps0)$DaysTreatment)
+sample_data(ps0)$DaysTreatment <- factor(sample_data(ps0)$DaysTreatment, levels = c("D0", "D3", "D7", "D13", "D16", "D18", "D20"))
+levels(sample_data(ps0)$DaysTreatment)
+
+# Reorder Treatments
+levels(sample_data(ps0)$Treatment)
+sample_data(ps0)$Treatment <- factor(sample_data(ps0)$Treatment, levels = c("Vehicle","Metro","Amp","AmpMetro"))
+levels(sample_data(ps0)$Treatment)
+
+# Relabel Treatments
+sample_data(ps0)$Treatment <- factor(sample_data(ps0)$Treatment, labels = c("Vehicle","Metro","Amp","Amp + Metro"))
+levels(sample_data(ps0)$Treatment)
+
+```
+
+##Sample assessment
+
+```{r sample-removal-identification}
+# Format a data table to combine sample summary data with sample variable data
+ss <- sample_sums(ps0)
+sd <- as.data.frame(sample_data(ps0))
+ss.df <- merge(sd, data.frame("ASVs" = ss), by ="row.names")
+
+# Plot the data by the treatment variable
+y = 1000 # Set a threshold for the minimum number of acceptable reads. Can start as a guess
+x = "DaysTreatment" # Set the x-axis variable you want to examine
+label = "Sample.ID" # This is the label you want to overlay on the points that are below threshold y. Should be something sample specific
+
+p.ss.boxplot <- ggplot(ss.df, aes_string(x, y = "ASVs")) + 
+  stat_boxplot(geom = "errorbar", position = position_dodge(width = 0.8)) +
+  geom_boxplot(outlier.colour="NA", position = position_dodge(width = 0.8), alpha = 0.2) +
+  scale_y_log10() +
+  facet_wrap(~Treatment) +
+  geom_hline(yintercept = y, lty = 2) + 
+  geom_point(position=position_jitterdodge(dodge.width = 0.8), aes_string(color = "SurvivalStatus"), size = 1.2) +
+  geom_text(data = ss.df, aes_string(x, y="ASVs", label=label), size=2) # This labels a subset that fall below threshold variable y and labels them with the label variable
+p.ss.boxplot
+
+```
+List of samples selected as outliers:
+c("D16.M5", "D16.M2", "D18.M3", "D18.M5", "D18.K1", "D20.M5", "D20.M2")
+
+```{r sample-outlier-removal}
+# Outlier samples: c("D16.M5", "D16.M2", "D18.M3", "D18.M5", "D18.K1", "D20.M5", "D20.M2")
+nsamples(ps0)
+ps1 <- ps0 %>%
+  subset_samples(
+    Sample.ID != "D16.M5" &
+    Sample.ID != "D16.M2" &
+    Sample.ID != "D18.M3" &
+    Sample.ID != "D18.M5" &
+    Sample.ID != "D18.K1" &
+    Sample.ID != "D20.M5" &
+    Sample.ID != "D20.M2"
+)
+nsamples(ps1)
+
+saveRDS(ps1, file = "./Results/ps1_WNV_infection.RDS")
+
+```
+
+```{r paired-read-counts}
+ggpaired(ss.df, x = "DaysTreatment", y = "ASVs", outlier.shape = NA, id = "CageDuringTreatment", line.size = 0.5, line.color = "gray") +
+  scale_y_log10() +
+  facet_grid(Virus~Treatment) +
+  stat_compare_means(ref.group = "D0", hide.ns = TRUE, label = "p.signif") +
+  theme(axis.text.x = element_text(size = 8)) +
+  theme(axis.text.y = element_text(size = 8)) +
+  theme(axis.title.x = element_blank()) +
+  ylab("Read Counts")
+
+```
+##Overall sample relationship to evaluate sample outliers
+
+##Taxon cleaning 
+
+```{r taxon-cleaning}
+# Begin by removing sequences that were classified as either mitochondria or chlorplast
+ntaxa(ps1) # Check the number of taxa prior to removal
+ps1 <- ps1 %>%
+  subset_taxa(
+    Family  != "mitochondria" &
+    Class   != "Chloroplast"
+  )
+ntaxa(ps1) # Confirm that the taxa were removed
+
+```
+##Data transformations
+
+```{r data-transform, include=FALSE}
+# Transform to Realative abundances
+ps1.ra <- transform_sample_counts(ps1, function(OTU) OTU/sum(OTU))
+
+# Transform to Proportional Abundance
+ps1.prop <- transform_sample_counts(ps1, function(x) min(sample_sums(ps1)) * x/sum(x))
+
+# Log transformation moves to a more normal distribution
+ps1.log <- transform_sample_counts(ps1, function(x) log(1 + x))
+
+# View how each function altered count data
+par(mfrow=c(1,4))
+plot(sort(sample_sums(ps1), TRUE), type = "o", main = "Native", ylab = "RSVs", xlab = "Samples")
+plot(sort(sample_sums(ps1.log), TRUE), type = "o", main = "log Transfromed", ylab = "RSVs", xlab = "Samples")
+plot(sort(sample_sums(ps1.ra), TRUE), type = "o", main = "Relative Abundance", ylab = "RSVs", xlab = "Samples")
+plot(sort(sample_sums(ps1.prop), TRUE), type = "o", main = "Proportional Abundance", ylab = "RSVs", xlab = "Samples")
+par(mfrow=c(1,4))
+
+# Histograms of the non-transformed data vs. the transformed data can address the shift to normality
+p.nolog <- qplot(rowSums(otu_table(ps1))) + ggtitle("Raw Counts") +
+  theme_bw() +
+  xlab("Row Sum") +
+  ylab("# of Samples")
+
+p.log <- qplot(log10(rowSums(otu_table(ps1)))) +
+  ggtitle("log10 transformed counts") +
+  theme_bw() +
+  xlab("Row Sum") +
+  ylab("# of Samples")
+
+grid.arrange(p.nolog, p.log, ncol = 2)
+
+```
+##Subsetting
+
+```{r subsetting, include=FALSE}
+#Subsets
+# All samples
+ntaxa(ps1)
+ps1 <- prune_taxa(taxa_sums(ps1) > 0, ps1)
+ntaxa(ps1)
+
+# Vehicle
+ps1
+ps1.vehicle <- subset_samples(ps1, Treatment == "Vehicle")
+any(taxa_sums(ps1.vehicle) == 0) # In this case it is TRUE, so remove the zero's
+ps1.vehicle <- prune_taxa(taxa_sums(ps1.vehicle) > 0, ps1.vehicle)
+any(taxa_sums(ps1.vehicle) == 0) # It should now be false
+
+# Amp
+ps1
+ps1.amp <- subset_samples(ps1, Treatment == "Amp")
+any(taxa_sums(ps1.amp) == 0) # In this case it is TRUE, so remove the zero's
+ps1.amp <- prune_taxa(taxa_sums(ps1.amp) > 0, ps1.amp)
+any(taxa_sums(ps1.amp) == 0) # It should now be false
+
+# Metro
+ps1
+ps1.metro <- subset_samples(ps1, Treatment == "Metro")
+any(taxa_sums(ps1.metro) == 0) # In this case it is TRUE, so remove the zero's
+ps1.metro <- prune_taxa(taxa_sums(ps1.metro) > 0, ps1.metro)
+any(taxa_sums(ps1.metro) == 0) # It should now be false
+
+# Amp Metro
+ps1
+ps1.ampmetro <- subset_samples(ps1, Treatment == "Amp + Metro")
+any(taxa_sums(ps1.ampmetro) == 0) # In this case it is TRUE, so remove the zero's
+ps1.ampmetro <- prune_taxa(taxa_sums(ps1.ampmetro) > 0, ps1.ampmetro)
+any(taxa_sums(ps1.ampmetro) == 0) # It should now be false
+
+```
+
+```{r phyla-level-boxplots}
+# agglomerate taxa
+glom <- tax_glom(ps1.ra, taxrank = 'Phylum')
+
+# create dataframe from phyloseq object
+dat <- as.tibble(psmelt(glom))
+
+# convert Phylum to a character vector from a factor because R
+# dat$Phylum <- as.character(dat$Phylum)
+
+# Reorder Phylum levels from most -> least abundant
+levels(dat$Phylum)
+dat$Phylum <- factor(dat$Phylum, levels = c("Bacteroidetes", "Firmicutes", "Proteobacteria", "Tenericutes", "Actinobacteria", "Verrucomicrobia"))
+levels(dat$Phylum)
+
+levels(dat$Treatment)
+dat$Treatment <- factor(dat$Treatment, levels = c("Vehicle", "Metro", "Amp", "Amp + Metro"))
+levels(dat$Treatment)
+
+p.boxplot.phylum.1 <- ggpaired(dat, x = "DaysTreatment", y = "Abundance", outlier.shape = NA, id = "CageDuringTreatment", line.size = 0.5, line.color = "lightgray", point.size = 0.3, width = 0.4) +
+  #geom_point(size = 1) +
+  #geom_jitter(width = 0.2, alpha = 0.7) +
+  ylab("Relative Abundance") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  stat_compare_means(label = "p.signif", method = "t.test", ref.group = "D0", hide.ns = TRUE, label.y.npc = 1) +
+  facet_grid(Treatment~Phylum) +
+  theme(axis.text.x = element_text(size = 6)) +
+  theme(axis.text.y = element_text(size = 6)) +
+  theme(axis.title.y = element_text(size = 6)) +
+  theme(axis.title.x = element_blank()) +
+  theme(strip.text = element_text(size = 6)) +
+  ylim(0,1.2)
+p.boxplot.phylum.1
+
+# Reduced to most abundant phylum
+summary(dat$Phylum)
+dat.1 <- filter(dat, Phylum %in% c("Bacteroidetes", "Firmicutes", "Proteobacteria", "Tenericutes"))
+dat.1 <- droplevels(dat.1)
+summary(dat.1$Phylum)
+
+levels(dat.1$Treatment)
+dat.1$Treatment <- factor(dat.1$Treatment, levels = c("Vehicle", "Amp", "Metro", "Amp + Metro"))
+levels(dat.1$Treatment)
+
+p.boxplot.phylum.2 <- ggpaired(dat.1, x = "DaysTreatment", y = "Abundance", outlier.shape = NA, id = "CageDuringTreatment", line.size = 0.5, line.color = "lightgray", point.size = 0.3, width = 0.4) +
+  #geom_point(size = 1) +
+  #geom_jitter(width = 0.2, alpha = 0.7) +
+  ylab("Relative Abundance") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  stat_compare_means(label = "p.signif", method = "t.test", ref.group = "D0", hide.ns = TRUE, label.y.npc = 0.95) +
+  facet_grid(Treatment~Virus~Phylum) +
+  theme(axis.text.x = element_text(size = 6)) +
+  theme(axis.text.y = element_text(size = 6)) +
+  theme(axis.title.y = element_text(size = 6)) +
+  theme(axis.title.x = element_blank()) +
+  theme(strip.text = element_text(size = 6)) +
+  ylim(0,1)
+p.boxplot.phylum.2
+
+```
+## Phylum level general additive model (GAM) plots
+
+```{r phyla-GAM-plots}
+# Define color scheme
+my.cols <- brewer.pal(n = 8, "Dark2")
+my.cols[3] <- "#08519C"
+
+# Phyla plots with GAM smoother 
+p.gam.phylum <- ggplot(dat.1, aes(x = Day, y = Abundance, color = Phylum, group = Phylum)) +
+  stat_smooth(method = "gam", formula = y ~ s(x, bs = "cr", k = 7)) +
+  facet_grid(~Treatment) +
+  ylab("Relative Abundance") +
+  geom_point(size = 1.25, alpha = 0.4) +
+  theme(axis.text.x = element_text(size = 10)) +
+  theme(axis.text.y = element_text(size = 10)) +
+  theme(axis.title.y = element_text(size = 10)) +
+  theme(strip.text = element_text(size = 10)) +
+  scale_y_continuous(breaks = c(0, 0.2, 0.4, 0.6, 0.8, 1.0, 1.2)) +
+  scale_x_continuous(breaks = c(0, 3, 7, 13, 16, 18, 20)) +
+  scale_color_manual(values = my.cols) +
+  theme(strip.background = element_blank()) +
+  guides(color=guide_legend(override.aes=list(fill=NA))) +
+  facet_grid(Treatment~Virus)
+p.gam.phylum
+
+# Testing plots - Close up view of how each phyla behaves
+dat.bac <- subset(dat, Phylum == "Bacteroidetes")
+dat.firm <- subset(dat, Phylum == "Firmicutes")
+dat.teneri <- subset(dat, Phylum == "Tenericutes")
+dat.proteo <- subset(dat, Phylum == "Proteobacteria")
+
+```
+## Phylum level general additive model (GAM) analysis
+
+```{r phyla-GAM-models}
+# Convert data frame so that each animal (CageDuringTreatment) has a unique phyla and abundnace (long form transformation with melt)
+dat.1.melt <- melt(dat.1, id.vars = c("CageDuringTreatment", "Day", "Phylum", "Treatment"), measure.vars = c("Abundance"))
+
+# Recast the data by indiviudal phyla
+dat.1.cast <- dcast(dat.1.melt, CageDuringTreatment + Treatment + Day ~ Phylum)
+
+# Subset melt/casted frames by Treatment for within treatment testing
+dat.1.cast.vehicle <- filter(dat.1.cast, Treatment %in% "Vehicle")
+dat.1.cast.amp <- filter(dat.1.cast, Treatment %in% "Amp")
+dat.1.cast.metro <- filter(dat.1.cast, Treatment %in% "Metro")
+dat.1.cast.ampmetro <- filter(dat.1.cast, Treatment %in% "Amp + Metro")
+
+## General Additive Model (GAM) testing for the contribution of the relative abundance of each Phyla to the change in abundnace over time
+# Vehicle
+mod_gam.vehicle.1 <- gam(Day ~ s(Bacteroidetes, bs = "cr", k = 7) + s(Firmicutes, bs = "cr", k = 7) + s(Proteobacteria, bs = "cr", k = 7) + s(Tenericutes, bs = "cr", k = 7), data = dat.1.cast.vehicle)
+summary(mod_gam.vehicle.1)
+
+ggpaired(subset(dat.proteo, Treatment == "Vehicle"), x = "DaysTreatment", y = "Abundance", outlier.shape = NA, id = "CageDuringTreatment", line.size = 0.5, line.color = "lightgray", point.size = 0.3, width = 0.4) +
+  stat_compare_means(label = "p.signif", method = "t.test", ref.group = "D0", hide.ns = TRUE, label.y.npc = 1) +
+  ggtitle("Proteobacteria in Vehicle Control Mice")
+
+# Metro
+mod_gam.metro.1 <- gam(Day ~ s(Bacteroidetes, bs = "cr", k = 7) + s(Firmicutes, bs = "cr", k = 7) + s(Proteobacteria, bs = "cr", k = 7) + s(Tenericutes, bs = "cr", k = 7), data = dat.1.cast.metro)
+summary(mod_gam.metro.1)
+
+ggpaired(subset(dat.teneri, Treatment == "Metro"), x = "DaysTreatment", y = "Abundance", outlier.shape = NA, id = "CageDuringTreatment", line.size = 0.5, line.color = "lightgray", point.size = 0.3, width = 0.4) +
+  stat_compare_means(label = "p.signif", method = "t.test", ref.group = "D0", hide.ns = TRUE, label.y.npc = 1) +
+  ggtitle("Tenericutes in Metro Treated Mice")
+
+ggpaired(subset(dat.proteo, Treatment == "Metro"), x = "DaysTreatment", y = "Abundance", outlier.shape = NA, id = "CageDuringTreatment", line.size = 0.5, line.color = "lightgray", point.size = 0.3, width = 0.4) +
+  stat_compare_means(label = "p.signif", method = "t.test", ref.group = "D0", hide.ns = TRUE, label.y.npc = 1) +
+  ggtitle("Proteobacteria in Metro Treated Mice")
+
+# Amp
+mod_gam.amp.1 <- gam(Day ~ s(Bacteroidetes, bs = "cr", k = 7) + s(Firmicutes, bs = "cr", k = 7) + s(Proteobacteria, bs = "cr", k = 7) + s(Tenericutes, bs = "cr", k = 7), data = dat.1.cast.amp)
+summary(mod_gam.amp.1)
+
+# Amp + Metro
+mod_gam.ampmetro <- gam(Day ~ s(Bacteroidetes, bs = "cr", k = 7) + s(Firmicutes, bs = "cr", k = 7) + s(Proteobacteria, bs = "cr", k = 7) + s(Tenericutes, bs = "cr", k = 7), data = dat.1.cast.ampmetro)
+summary(mod_gam.ampmetro)
+
+```
+##Alpha diversity summary information generation
+
+```{r add-sample-data}
+# Diversity
+diversity <- global(ps1)
+head(diversity)
+ps1.rich <- merge(sd, diversity, by ="row.names") # merge sd.1 by row names
+
+# Add divergence measurements
+ps1.rich$divergence <- divergence(ps1)
+
+```
+## Alpha diversity analysis - Paired Boxplots
+
+```{r alpha-diversity-paired}
+p.rich.treatment <- ggpaired(ps1.rich,  x = "DaysTreatment", y = "richness_0", outlier.shape = NA, id = "CageDuringTreatment", line.size = 0.5, line.color = "gray") +
+  geom_jitter(width = 0.2) +
+  facet_grid(~Treatment) +
+  ylab("Richness") +
+  theme(axis.title.x = element_blank()) +
+  stat_compare_means(label = "p.signif", method = "t.test", ref.group = "D0", hide.ns = TRUE)
+
+p.sd.treatment <- ggpaired(ps1.rich, x = "DaysTreatment", y = "diversities_shannon", outlier.shape = NA, id = "CageDuringTreatment", line.size = 0.5, line.color = "gray") +
+  geom_boxplot(position = position_dodge()) +
+  geom_jitter(width = 0.2) +
+  facet_grid(~Treatment) +
+  ylab("Shannon diversity") +
+  theme(axis.title.x = element_blank()) +
+  stat_compare_means(label = "p.signif", method = "t.test", ref.group = "D0", hide.ns = TRUE)
+
+grid.arrange(p.rich.treatment, p.sd.treatment, nrow = 2)
+
+```
+## Alpha diversity general additive model (GAM) analysis.
+
+```{r alpha-diverstiy-GAM-plots}
+ps1.rich.melt <- melt(ps1.rich, id.vars = c("Treatment", "Day", "DaysTreatment"), measure.vars = c("richness_0"))
+ps1.sd.melt <- melt(ps1.rich, id.vars = c("Treatment", "Day", "DaysTreatment"), measure.vars = c("diversities_shannon"))
+
+# Richness
+p.rich.gam.treat <- ggplot(ps1.rich.melt, aes(x = Day, y = value, color = Treatment, group = Treatment)) +
+  stat_smooth(method = "gam", formula = y ~ s(x, bs = "cr", k = 7)) +
+  ylab("Richness") +
+  geom_point(size = 1.25, alpha = 0.5) +
+  theme(axis.text.x = element_text(size = 10)) +
+  theme(axis.text.y = element_text(size = 10)) +
+  theme(axis.title.y = element_blank()) +
+  theme(axis.title.x = element_blank()) +
+  theme(strip.text = element_text(size = 10)) +
+  scale_color_manual(values = c("black", "chocolate", "green", "purple")) +
+  theme(legend.position = "NULL") +
+  scale_y_continuous(limits = c(0,250), breaks = c(0,50, 100, 150, 200, 250)) +
+  scale_x_continuous(breaks = c(0,3,7,13,16,18,20))
+
+# Shannon diversity
+p.sd.gam.treat <- ggplot(ps1.sd.melt, aes(x = Day, y = value, color = Treatment, group = Treatment)) +
+  stat_smooth(method = "gam", formula = y ~ s(x, bs = "cr", k = 7)) +
+  ylab("Shannon Diversity") +
+  geom_point(size = 1.25, alpha = 0.5) +
+  theme(axis.text.x = element_text(size = 10)) +
+  theme(axis.text.y = element_text(size = 10)) +
+  theme(axis.title.y = element_blank()) +
+  theme(axis.title.x = element_blank()) +
+  theme(strip.text = element_text(size = 10)) +
+  scale_color_manual(values = c("black", "green", "chocolate", "purple"), labels = c("Vehicle", "A", "M", "AM")) +
+  guides(color=guide_legend(override.aes=list(fill=NA))) +
+  theme(legend.position = "right") +
+  theme(legend.title = element_blank()) +
+  scale_y_continuous(limits = c(0,5), breaks = c(0,1,2,3,4,5)) +
+  scale_x_continuous(breaks = c(0,3,7,13,16,18,20))
+  #theme(legend.title = element_blank())
+
+grid.arrange(p.rich.gam.treat, p.sd.gam.treat, ncol = 2)
+
+```
+## Ordination
+
+```{r ordination}
+#Ordination Analysis
+#Beta Diversity has same trend of timepoints with longtail and bimodal read counts having larger elipses
+ord.pcoa.bray <- ordinate(ps1, method = "PCoA", distance = "bray")
+ord.pcoa.uni <- ordinate(ps1, method = "PCoA", distance = "unifrac")
+ord.pcoa.wuni <- ordinate(ps1, method = "PCoA", distance = "wunifrac")
+
+ord.nmds.bray <- ordinate(ps1, method = "NMDS", distance = "bray")
+ord.nmds.uni <- ordinate(ps1, method = "NMDS", distance = "unifrac")
+ord.nmds.wuni <- ordinate(ps1, method = "NMDS", distance = "wunifrac")
+
+```
+## Beta diversity ordination plots ~ SurvivalStatus
+
+```{r ordination-plots}
+## Ordination plots all samples
+# Bray
+p.pcoa.bray <- plot_ordination(ps1, ord.pcoa.bray, color = "SurvivalStatus", axes = c(1,2)) +
+  geom_point(size = 2) +
+  ggtitle("PCoA of UniFrac Distances") +
+  facet_grid(Treatment~DaysTreatment)
+  #stat_ellipse(type = "norm", geom = "polygon", alpha = 1/10, aes(fill = SurvivalStatus))
+p.pcoa.bray
+
+# Unifrac
+p.pcoa.uni <- plot_ordination(ps1, ord.pcoa.uni, color = "SurvivalStatus", axes = c(1,2)) +
+  geom_point(size = 2) +
+  ggtitle("PCoA of UniFrac Distances") +
+  facet_grid(Treatment~DaysTreatment)
+  #stat_ellipse(type = "norm", geom = "polygon", alpha = 1/10, aes(fill = SurvivalStatus))
+p.pcoa.uni
+
+# Weighted Unifrac
+p.pcoa.wuni <- plot_ordination(ps1, ord.pcoa.wuni, color = "SurvivalStatus", axes = c(1,2)) +
+  geom_point(size = 2) +
+  ggtitle("PCoA of wUniFrac Distances") +
+  facet_grid(Treatment~DaysTreatment) +
+  stat_ellipse(type = "norm", geom = "polygon", alpha = 1/10, aes(fill = SurvivalStatus))
+p.pcoa.wuni
+
+```
+
+```{r pcoa-plot}
+p.pcoa.uni.treat <- plot_ordination(ps1, ord.pcoa.uni, color = "Treatment", shape = "SurvivalStatus") +
+  geom_point(size = 3) +
+  # ggtitle("PCoA of UniFrac Distances") +
+  facet_grid(~DaysTreatment) +
+  scale_color_manual(values = c("black", "green", "chocolate", "purple"), labels = c("Vehicle", "A", "M", "AM")) +
+  theme(axis.title.y = element_blank()) +
+  theme(axis.title.x = element_blank()) +
+  theme(legend.position = "bottom") +
+  theme(legend.text = element_text(size = 10)) +
+  theme(legend.title = element_blank()) +
+  theme(strip.background = element_blank()) +
+  theme(strip.text.x = element_blank())
+p.pcoa.uni.treat
+
+```
+
+##Group significance testing with ADONIS
+
+```{r adonis-script}
+# Set a random seed so that exact results can be reproduced
+set.seed(10000)
+
+# Function to run adonis test on a physeq object and a variable from metadata 
+doadonis <- function(physeq, category) {
+  bdist <- phyloseq::distance(physeq, "unifrac")
+  col <- as(sample_data(physeq), "data.frame")[ ,category]
+  
+  # Adonis test
+  adonis.bdist <- adonis(bdist ~ col)
+  print("Adonis results:")
+  print(adonis.bdist)
+  
+  # Homogeneity of dispersion test
+  betatax = betadisper(bdist,col)
+  p = permutest(betatax)
+  print("Betadisper results:")
+  print(p$tab)
+}
+
+doadonis(ps1, "Treatment")
+
+```
+
+```{r pairwise-adonis}
+library(pairwiseAdonis)
+
+ps1.d0 <- subset_samples(ps1, DaysTreatment == "D0")
+ps1_otu_table.d0 <- as.data.frame(otu_table(ps1.d0))
+sd.df.d0 <- as.data.frame(sample_data(ps1.d0))
+ps1_otu_table.d0$Treatment <- sd.df.d0$Treatment
+
+ps1.d3 <- subset_samples(ps1, DaysTreatment == "D3")
+ps1_otu_table.d3 <- as.data.frame(otu_table(ps1.d3))
+sd.df.d3 <- as.data.frame(sample_data(ps1.d3))
+ps1_otu_table.d3$Treatment <- sd.df.d3$Treatment
+
+ps1.d7 <- subset_samples(ps1, DaysTreatment == "D7")
+ps1_otu_table.d7 <- as.data.frame(otu_table(ps1.d7))
+sd.df.d7 <- as.data.frame(sample_data(ps1.d7))
+ps1_otu_table.d7$Treatment <- sd.df.d7$Treatment
+
+ps1.d13 <- subset_samples(ps1, DaysTreatment == "D13")
+ps1_otu_table.d13 <- as.data.frame(otu_table(ps1.d13))
+sd.df.d13 <- as.data.frame(sample_data(ps1.d13))
+ps1_otu_table.d13$Treatment <- sd.df.d13$Treatment
+
+ps1.d16 <- subset_samples(ps1, DaysTreatment == "D16")
+ps1_otu_table.d16 <- as.data.frame(otu_table(ps1.d16))
+sd.df.d16 <- as.data.frame(sample_data(ps1.d16))
+ps1_otu_table.d16$Treatment <- sd.df.d16$Treatment
+
+ps1.d20 <- subset_samples(ps1, DaysTreatment == "D20")
+ps1_otu_table.d20 <- as.data.frame(otu_table(ps1.d20))
+sd.df.d20 <- as.data.frame(sample_data(ps1.d20))
+ps1_otu_table.d20$Treatment <- sd.df.d20$Treatment
+
+pairwise.adonis(ps1_otu_table.d0[,1:1363], ps1_otu_table.d0$Treatment)
+pairwise.adonis(ps1_otu_table.d3[,1:1363], ps1_otu_table.d3$Treatment)
+pairwise.adonis(ps1_otu_table.d7[,1:1363], ps1_otu_table.d7$Treatment)
+pairwise.adonis(ps1_otu_table.d13[,1:1363], ps1_otu_table.d13$Treatment)
+pairwise.adonis(ps1_otu_table.d16[,1:1363], ps1_otu_table.d16$Treatment)
+pairwise.adonis(ps1_otu_table.d20[,1:1363], ps1_otu_table.d20$Treatment)
+
+```
+
+```{r adonis-tests}
+# Amp ~ Day
+ps1.amp.d0 <- subset_samples(ps1.amp, DaysTreatment == "D0")
+ps1.amp.d3 <- subset_samples(ps1.amp, DaysTreatment == "D3")
+ps1.amp.d7 <- subset_samples(ps1.amp, DaysTreatment == "D7")
+ps1.amp.d13 <- subset_samples(ps1.amp, DaysTreatment == "D13")
+ps1.amp.d16 <- subset_samples(ps1.amp, DaysTreatment == "D16")
+ps1.amp.d20 <- subset_samples(ps1.amp, DaysTreatment == "D20")
+
+doadonis(ps1.amp.d0, "SurvivalStatus") # *
+doadonis(ps1.amp.d3, "SurvivalStatus") # n.s.
+doadonis(ps1.amp.d7, "SurvivalStatus") # n.s.
+doadonis(ps1.amp.d13, "SurvivalStatus") # n.s. 
+doadonis(ps1.amp.d16, "SurvivalStatus") # n.s.
+doadonis(ps1.amp.d20, "SurvivalStatus") # n.s.
+
+# Treatment ~ Day
+ps1.d0 <- subset_samples(ps1, DaysTreatment == "D0")
+ps1.d3 <- subset_samples(ps1, DaysTreatment == "D3")
+ps1.d7 <- subset_samples(ps1, DaysTreatment == "D7")
+ps1.d13 <- subset_samples(ps1, DaysTreatment == "D13")
+ps1.d16 <- subset_samples(ps1, DaysTreatment == "D16")
+ps1.d20 <- subset_samples(ps1, DaysTreatment == "D20")
+
+doadonis(ps1.d0, "Treatment") # *
+doadonis(ps1.d3, "Treatment") # **
+doadonis(ps1.d7, "Treatment") # ***
+doadonis(ps1.d13, "Treatment") # ***
+doadonis(ps1.d16, "Treatment") # ***
+doadonis(ps1.d20, "Treatment") # ***
+
+
+
+```
+## NMDS time-series analysis
+
+```{r nmds-analysis}
+# Stressplots
+par(mfrow=c(1,3))
+stressplot(ord.nmds.bray)
+stressplot(ord.nmds.uni)
+stressplot(ord.nmds.wuni)
+par(mfrow=c(1,1))
+
+# Bray squashes all of the dissimilarity to ~ 0.5 and above. wUnifrac has issues at very low dissimilatiry, likely in the Amp + Metro samples which are largely a proteobacteria only community. UniFrac has a nice smooth over all dissimilarities so will use that. UniFrac also performs well in the PCoA plots so there will be parity in dissimilarity across analysis.
+
+# Extract scores and merge with sample data
+uni.scores <- as.data.frame(scores(ord.nmds.uni))
+uni.scores <- merge(sd, uni.scores, by = "row.names")
+
+# NMDS1 scores over time
+p.nmds.uni <- ggplot(uni.scores, aes(x = DaysTreatment, y = NMDS1, color = Treatment, group = Treatment)) +
+  geom_point(size = 1.25, alpha = 0.3) +
+  geom_smooth(method = "gam", formula = y ~ s(x, bs = "cr", k = 7)) +
+  #facet_wrap(~Treatment, ncol = 2, nrow = 2) +
+  ylab("NMDS1") +
+  ggtitle("UniFrac NMDS1")
+p.nmds.uni
+
+```
+
+## R session info
+```{r session-info}
+sessionInfo()
+```
