@@ -1,8 +1,10 @@
 # Publication Information
 
-Pubmed: https://www.ncbi.nlm.nih.gov/pubmed/29590614
-Title: Oral Antibiotic Treatment of Mice Exacerbates the Disease Severity of Multiple Flavivirus Infections.
-DOI: 10.1016/j.celrep.2018.03.001
+- Pubmed: https://www.ncbi.nlm.nih.gov/pubmed/29590614
+
+- Title: Oral Antibiotic Treatment of Mice Exacerbates the Disease Severity of Multiple Flavivirus Infections.
+
+- DOI: 10.1016/j.celrep.2018.03.001
 
 # West Nile Virus Infection in mice treated with vehicle or various antibiotics
 
