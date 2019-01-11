@@ -1,3 +1,9 @@
+# Publication Information
+
+*Pubmed:*: https://www.ncbi.nlm.nih.gov/pubmed/29590614
+*Title:* Oral Antibiotic Treatment of Mice Exacerbates the Disease Severity of Multiple Flavivirus Infections.
+*DOI:* 10.1016/j.celrep.2018.03.001
+
 # West Nile Virus Infection in mice treated with vehicle or various antibiotics
 
 Mice were cohoused for 2 weeks prior to separation into individual cages (Day -14). After 2 weeks, mice were individually caged (Day 0). A fecal pellet was taken prior to antibiotics treatment (Day 0) and subsequently after treatment at Days 3, 7, 13, 16 and 18. Mice were infected with West Nile Virus (WNV2000) at Day 14.
