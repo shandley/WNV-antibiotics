@@ -22,7 +22,7 @@ For all analysis, the Day -14 data has been removed. Cohousing was performed in 
 
 An additional set of uninfected mice were analyzed in parallel. Ultimately, only infected mice were focused on for the study, so these samples are not investigated in the RMarkdown documents here.
 
-Amplicon sequences were resolved using dada2 (full workflow: wnv_antibiotics_preprocessing.Rmd). Samples were spread across two independente MiSeq runs, therefore dada2 sequence resolution was performed indepdenetly for each run, and the results combined prior to generation of unique amplicon sequence variants (ASV), taxonomic assignment and phylogenetic tree construction. Taxonomy was assigned to multiple reference databases:
+Amplicon sequences were resolved using dada2 (full workflow: wnv_antibiotics_preprocessing.Rmd). Samples were spread across two independent MiSeq runs, therefore dada2 sequence resolution was performed independently for each run, and the results combined prior to generation of unique amplicon sequence variants (ASV), taxonomic assignment and phylogenetic tree construction. Taxonomy was assigned to multiple reference databases:
 
 1) GreenGenes
 2) RDP
