@@ -5,7 +5,7 @@ date: '`r format(Sys.Date(), "%B %d, %Y")`'
 output: html_document
 ---
 
-**Project Description:** Examination of the enteric bacterial microbiome of nice infected with West Nile Virus mice (pre and post infection) to determine alterations in bacterial community strucutre or specific taxa which covary with lethality.
+**Project Description:** Examination of the enteric bacterial microbiome of nice infected with West Nile Virus mice (pre and post infection) to determine alterations in bacterial community structure or specific taxa which covary with lethality.
 
 **Primary Collaborator:**
 Larissa Thakray (lthackray@wustl.edu)
